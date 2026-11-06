@@ -91,18 +91,43 @@ def setup_tesseract_path(custom_cmd: str = None):
 setup_tesseract_path()
 
 
-def crop_top_bottom(img, crop_top: int = 100, crop_bottom: int = 80):
+def resolve_crop_px(val, total_dimension: int) -> int:
+    """
+    Resolves a crop value to pixel count.
+    Supports:
+      - float or int < 1.0 (e.g. 0.35 -> 35% ratio of total_dimension)
+      - string percentage (e.g. '35%' -> 35% ratio)
+      - int/float >= 1.0 (e.g. 800 -> 800 pixels)
+    """
+    if val is None:
+        return 0
+    if isinstance(val, str):
+        val = val.strip()
+        if val.endswith("%"):
+            ratio = float(val[:-1]) / 100.0
+            return int(total_dimension * ratio)
+        val = float(val)
+
+    if isinstance(val, (int, float)):
+        if 0.0 < val < 1.0:
+            return int(total_dimension * val)
+        return int(val)
+    return 0
+
+
+def crop_top_bottom(img, crop_top=100, crop_bottom=80):
     """
     Crops unwanted margins/headers at the top and footers at the bottom of the page image.
+    Supports either pixel count (>= 1.0) or ratio/percentage (< 1.0 or '35%').
 
     :param img: PIL Image object.
-    :param crop_top: Pixels to remove from top (e.g. headers, logos).
-    :param crop_bottom: Pixels to remove from bottom (e.g. copyright notices, page numbers).
+    :param crop_top: Pixels or ratio to remove from top.
+    :param crop_bottom: Pixels or ratio to remove from bottom.
     :return: Cropped PIL Image.
     """
     width, height = img.size
-    top = max(0, min(int(crop_top), height - 1))
-    bottom = max(top + 1, height - max(0, int(crop_bottom)))
+    top = max(0, min(resolve_crop_px(crop_top, height), height - 1))
+    bottom = max(top + 1, height - max(0, resolve_crop_px(crop_bottom, height)))
     return img.crop((0, top, width, bottom))
 
 
@@ -144,8 +169,10 @@ def extract_text_from_pdf(
     dpi: int = 200,
     lang: str = "ben+eng",
     custom_config: str = DEFAULT_TESSERACT_CONFIG,
-    crop_top: int = 100,
-    crop_bottom: int = 80,
+    crop_top=100,
+    crop_bottom=80,
+    crop_top_first=0.35,
+    crop_bottom_first=None,
     split: str = "columns",
     split_ratio: float = 0.5,
     debug_break: bool = True,
@@ -155,7 +182,7 @@ def extract_text_from_pdf(
 ) -> str:
     """
     Extracts text from a given PDF using PyMuPDF and pytesseract OCR.
-    1. Crops top and bottom margins (header/footer).
+    1. Applies dedicated crop ratio/pixels for Page 1 (header banners) and regular crop for subsequent pages.
     2. Splits image into columns/sections.
     3. Saves preview images and halts at 'break' if debug_break=True.
     4. Runs OCR (with Devanagari/Bengali shiro-rekha split for bold text) and formats extracted text.
@@ -164,11 +191,13 @@ def extract_text_from_pdf(
     :param dpi: Resolution for rasterizing PDF pages to images (default: 200).
     :param lang: Tesseract language codes (e.g. 'ben+eng' for Bengali & English).
     :param custom_config: Tesseract configuration flags.
-    :param crop_top: Pixels to crop from the top before splitting (default: 100).
-    :param crop_bottom: Pixels to crop from the bottom before splitting (default: 80).
+    :param crop_top: Pixels or ratio to crop from the top for regular pages (default: 100).
+    :param crop_bottom: Pixels or ratio to crop from the bottom for regular pages (default: 80).
+    :param crop_top_first: Crop ratio or pixels specifically for Page 1 (default: 0.35 = 35% ratio).
+    :param crop_bottom_first: Crop for bottom of Page 1 (defaults to crop_bottom if None).
     :param split: 'columns' (left/right), 'rows' (top/bottom), or 'none'.
     :param split_ratio: Cut position ratio (default: 0.5).
-    :param debug_break: If True, saves preview images on first page and breaks before OCR.
+    :param debug_break: If True, saves preview images for Page 1 and Page 2 then breaks before OCR.
     :param debug_dir: Directory where debug preview images are saved (default: 'debug_images').
     :param tesseract_cmd: Optional custom path to tesseract.exe.
     :param on_page_progress: Optional callback function(current_page, total_pages).
@@ -208,14 +237,22 @@ def extract_text_from_pdf(
             pix = page.get_pixmap(dpi=dpi)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
             
-            # 2. Crop top and bottom margins before splitting
-            img_cropped = crop_top_bottom(img, crop_top=crop_top, crop_bottom=crop_bottom)
+            # 2. Select appropriate crop for Page 1 vs subsequent pages
+            if page_index == 0:
+                c_top = crop_top_first if crop_top_first is not None else crop_top
+                c_bottom = crop_bottom_first if crop_bottom_first is not None else crop_bottom
+            else:
+                c_top = crop_top
+                c_bottom = crop_bottom
 
-            # 3. Split cropped image into sections (e.g. Left & Right columns)
+            # 3. Crop top and bottom margins before splitting
+            img_cropped = crop_top_bottom(img, crop_top=c_top, crop_bottom=c_bottom)
+
+            # 4. Split cropped image into sections (e.g. Left & Right columns)
             image_sections = split_page_image(img_cropped, split_mode=split, split_ratio=split_ratio)
 
-            # 4. Save preview images so you can inspect them first
-            if debug_break and page_index == 0:
+            # 5. Save preview images so you can inspect them first
+            if debug_break and page_index < 2:
                 os.makedirs(debug_dir, exist_ok=True)
                 orig_file = os.path.join(debug_dir, f"page_{page_index + 1}_original.png")
                 cropped_file = os.path.join(debug_dir, f"page_{page_index + 1}_cropped_top_bottom.png")
@@ -223,23 +260,33 @@ def extract_text_from_pdf(
                 img.save(orig_file)
                 img_cropped.save(cropped_file)
 
-                print(f"\n[DEBUG] Preview images saved for inspection in '{debug_dir}/':")
+                crop_info = f"top={c_top}, bottom={c_bottom}"
+                if page_index == 0:
+                    crop_info += " [FIRST PAGE SEPARATE CROP]"
+                else:
+                    crop_info += " [REGULAR PAGE CROP]"
+
+                print(f"\n[DEBUG] Preview images saved for Page {page_index + 1} ({crop_info}) in '{debug_dir}/':")
                 print(f"  1. Original: {orig_file}")
-                print(f"  2. Cropped (top={crop_top}px, bottom={crop_bottom}px): {cropped_file}")
+                print(f"  2. Cropped : {cropped_file}")
                 
                 for idx, part_img in enumerate(image_sections, 1):
                     part_file = os.path.join(debug_dir, f"page_{page_index + 1}_part_{idx}.png")
                     part_img.save(part_file)
                     print(f"  3.{idx} Split part {idx}: {part_file}")
 
-                # =========================================================================
-                # BREAK STATEMENT: Stops here before extracting text so you can inspect!
-                # (To continue full OCR, comment out 'break' or pass --no-break flag)
-                # =========================================================================
-                print("\n[DEBUG] Paused at break statement before text extraction. Please inspect the images above.")
-                break
+                # If we've processed Page 1 (and Page 2 if available), break before OCR
+                if page_index == min(1, total_pages - 1):
+                    # =========================================================================
+                    # BREAK STATEMENT: Stops here before extracting text so you can inspect!
+                    # (To continue full OCR, pass --no-break flag or comment out 'break')
+                    # =========================================================================
+                    print("\n[DEBUG] Paused at break statement before text extraction. Please inspect the images above.")
+                    break
+                else:
+                    continue
 
-            # 5. Extract text via OCR
+            # 6. Extract text via OCR
             section_texts = []
             for part_img in image_sections:
                 text = pytesseract.image_to_string(part_img, lang=lang, config=custom_config)

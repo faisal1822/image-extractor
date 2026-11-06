@@ -93,8 +93,8 @@ def parse_arguments():
         epilog="""Examples:
   python index.py --file=40
   python index.py --file=40 --no-break
+  python index.py --file=40 --crop-top-first=0.35 --crop-top=100
   python index.py --file=all --no-break --skip-existing
-  python index.py --file=40 --crop-top=120 --crop-bottom=70
 """
     )
 
@@ -121,19 +121,31 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        "--crop-top-first",
+        dest="crop_top_first",
+        default="0.35",
+        help="Top crop ratio or pixels specifically for Page 1 (default: 0.35 = 35%% ratio or 800px)."
+    )
+
+    parser.add_argument(
+        "--crop-bottom-first",
+        dest="crop_bottom_first",
+        default=None,
+        help="Bottom crop ratio or pixels for Page 1 (default: falls back to --crop-bottom)."
+    )
+
+    parser.add_argument(
         "--crop-top",
         dest="crop_top",
-        type=int,
-        default=100,
-        help="Pixels to crop from top before splitting (default: 100)."
+        default="100",
+        help="Top crop pixels or ratio for regular pages (page 2 onwards, default: 100px)."
     )
 
     parser.add_argument(
         "--crop-bottom",
         dest="crop_bottom",
-        type=int,
-        default=80,
-        help="Pixels to crop from bottom before splitting (default: 80)."
+        default="80",
+        help="Bottom crop pixels or ratio for regular pages (default: 80px)."
     )
 
     parser.add_argument(
@@ -221,15 +233,15 @@ def main():
     print(f" Found {len(targets)} file(s) to process:")
     for t in targets:
         print(f"  -> {t}")
-    print(f" Output folder : {os.path.abspath(args.output_dir)}")
-    print(f" Top Crop      : {args.crop_top} px")
-    print(f" Bottom Crop   : {args.crop_bottom} px")
-    print(f" Page Split    : {args.split} (ratio: {args.split_ratio})")
-    print(f" OCR Language  : {args.lang} | DPI: {args.dpi}")
+    print(f" Output folder  : {os.path.abspath(args.output_dir)}")
+    print(f" Page 1 Top Crop: {args.crop_top_first} (Dedicated First Page Ratio)")
+    print(f" Other Pages Top: {args.crop_top} | Bottom: {args.crop_bottom}")
+    print(f" Page Split     : {args.split} (ratio: {args.split_ratio})")
+    print(f" OCR Language   : {args.lang} | DPI: {args.dpi}")
     if debug_break:
-        print(" Debug Mode    : ACTIVE (Will save images & pause at break statement)")
+        print(" Debug Mode     : ACTIVE (Saves Page 1 & 2 images & pauses at break)")
     if args.skip_existing:
-        print(" Skip Existing : Enabled")
+        print(" Skip Existing  : Enabled")
     print("=" * 60)
 
     success_count = 0
@@ -258,6 +270,8 @@ def main():
                 lang=args.lang,
                 crop_top=args.crop_top,
                 crop_bottom=args.crop_bottom,
+                crop_top_first=args.crop_top_first,
+                crop_bottom_first=args.crop_bottom_first,
                 split=args.split,
                 split_ratio=args.split_ratio,
                 debug_break=debug_break,
@@ -277,7 +291,7 @@ def main():
                 success_count += 1
             else:
                 if debug_break:
-                    print(f"   [INFO] Paused at break statement. Check 'debug_images/' to review images.")
+                    print(f"   [INFO] Paused at break statement. Check 'debug_images/' to review Page 1 and Page 2.")
 
         except Exception as e:
             print()
